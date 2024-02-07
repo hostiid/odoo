@@ -9,7 +9,7 @@ export class ButtonBox extends Component {
     setup() {
         const ui = useService("ui");
         console.log("ui", ui);
-        this.getMaxButtons = () => [2, 2, 2, 4, 5, 6][ui.size] || 7;
+        this.getMaxButtons = () => [2, 2, 2, 4, 5, 6, 6][ui.size] || 7;
     }
 
     getButtons() {
