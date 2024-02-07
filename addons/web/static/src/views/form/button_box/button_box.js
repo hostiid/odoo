@@ -8,7 +8,8 @@ import { Component } from "@odoo/owl";
 export class ButtonBox extends Component {
     setup() {
         const ui = useService("ui");
-        this.getMaxButtons = () => [2, 2, 2, 4][ui.size] || 7;
+        console.log("ui", ui);
+        this.getMaxButtons = () => [2, 2, 2, 4, 5, 6][ui.size] || 7;
     }
 
     getButtons() {
