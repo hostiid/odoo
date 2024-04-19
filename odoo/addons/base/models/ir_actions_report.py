@@ -87,7 +87,7 @@ class IrActionsReport(models.Model):
     _description = 'Report Action'
     _inherit = 'ir.actions.actions'
     _table = 'ir_act_report_xml'
-    _order = 'name'
+    _order = 'name, id'
     _allow_sudo_commands = False
 
     type = fields.Char(default='ir.actions.report')
@@ -756,7 +756,7 @@ class IrActionsReport(models.Model):
                     attachment_writer.addPage(reader.getPage(i))
                     stream = io.BytesIO()
                     attachment_writer.write(stream)
-                    collected_streams[res_ids[i]]['stream'] = stream
+                    collected_streams[res_ids_wo_stream[i]]['stream'] = stream
                 return collected_streams
 
             # In cases where the number of res_ids != the number of pages,
@@ -784,7 +784,7 @@ class IrActionsReport(models.Model):
                 outlines_pages = sorted(set(outlines_pages))
 
                 # The number of outlines must be equal to the number of records to be able to split the document.
-                has_same_number_of_outlines = len(outlines_pages) == len(res_ids)
+                has_same_number_of_outlines = len(outlines_pages) == len(res_ids_wo_stream)
 
                 # There should be a top-level heading on first page
                 has_top_level_heading = outlines_pages[0] == 0
@@ -798,13 +798,51 @@ class IrActionsReport(models.Model):
                             attachment_writer.addPage(reader.getPage(j))
                         stream = io.BytesIO()
                         attachment_writer.write(stream)
-                        collected_streams[res_ids[i]]['stream'] = stream
+                        collected_streams[res_ids_wo_stream[i]]['stream'] = stream
 
                     return collected_streams
 
             collected_streams[False] = {'stream': pdf_content_stream, 'attachment': None}
 
         return collected_streams
+
+    def _prepare_pdf_report_attachment_vals_list(self, report, streams):
+        """Hook to prepare attachment values needed for attachments creation
+        during the pdf report generation.
+
+        :param report: The report (with sudo) from a reference report_ref.
+        :param streams: Dict of streams for each report containing the pdf content and existing attachments.
+        :return: attachment values list needed for attachments creation.
+        """
+        attachment_vals_list = []
+        for res_id, stream_data in streams.items():
+            # An attachment already exists.
+            if stream_data['attachment']:
+                continue
+
+            # if res_id is false
+            # we are unable to fetch the record, it won't be saved as we can't split the documents unambiguously
+            if not res_id:
+                _logger.warning(
+                    "These documents were not saved as an attachment because the template of %s doesn't "
+                    "have any headers seperating different instances of it. If you want it saved,"
+                    "please print the documents separately", report.report_name)
+                continue
+            record = self.env[report.model].browse(res_id)
+            attachment_name = safe_eval(report.attachment, {'object': record, 'time': time})
+
+            # Unable to compute a name for the attachment.
+            if not attachment_name:
+                continue
+
+            attachment_vals_list.append({
+                'name': attachment_name,
+                'raw': stream_data['stream'].getvalue(),
+                'res_model': report.model,
+                'res_id': record.id,
+                'type': 'binary',
+            })
+        return attachment_vals_list
 
     def _render_qweb_pdf(self, report_ref, res_ids=None, data=None):
         if not data:
@@ -824,35 +862,7 @@ class IrActionsReport(models.Model):
 
         # Generate the ir.attachment if needed.
         if report_sudo.attachment:
-            attachment_vals_list = []
-            for res_id, stream_data in collected_streams.items():
-                # An attachment already exists.
-                if stream_data['attachment']:
-                    continue
-
-                # if res_id is false
-                # we are unable to fetch the record, it won't be saved as we can't split the documents unambiguously
-                if not res_id:
-                    _logger.warning(
-                        "These documents were not saved as an attachment because the template of %s doesn't "
-                        "have any headers seperating different instances of it. If you want it saved,"
-                        "please print the documents separately", report_sudo.report_name)
-                    continue
-                record = self.env[report_sudo.model].browse(res_id)
-                attachment_name = safe_eval(report_sudo.attachment, {'object': record, 'time': time})
-
-                # Unable to compute a name for the attachment.
-                if not attachment_name:
-                    continue
-
-                attachment_vals_list.append({
-                    'name': attachment_name,
-                    'raw': stream_data['stream'].getvalue(),
-                    'res_model': report_sudo.model,
-                    'res_id': record.id,
-                    'type': 'binary',
-                })
-
+            attachment_vals_list = self._prepare_pdf_report_attachment_vals_list(report_sudo, collected_streams)
             if attachment_vals_list:
                 attachment_names = ', '.join(x['name'] for x in attachment_vals_list)
                 try:
