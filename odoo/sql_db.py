@@ -44,8 +44,8 @@ _logger_conn = _logger.getChild("connection")
 
 real_time = time.time.__call__  # ensure we have a non patched time for query times when using freezegun
 
-re_from = re.compile('.* from "?([a-zA-Z_0-9]+)"? .*$', re.MULTILINE | re.IGNORECASE)
-re_into = re.compile('.* into "?([a-zA-Z_0-9]+)"? .*$', re.MULTILINE | re.IGNORECASE)
+re_from = re.compile(r'\bfrom\s+"?([a-zA-Z_0-9]+)\b', re.IGNORECASE)
+re_into = re.compile(r'\binto\s+"?([a-zA-Z_0-9]+)\b', re.IGNORECASE)
 
 sql_counter = 0
 
@@ -404,8 +404,8 @@ class Cursor(BaseCursor):
 
     @contextmanager
     def _enable_table_tracking(self):
+        old = self._sql_table_tracking
         try:
-            old = self._sql_table_tracking
             self._sql_table_tracking = True
             yield
         finally:
@@ -516,7 +516,11 @@ class TestCursor(BaseCursor):
         +------------------------+---------------------------------------------------+
     """
     _cursors_stack = []
-    def __init__(self, cursor, lock):
+
+    def __init__(self, cursor, lock, current_test=None):
+        assert isinstance(cursor, BaseCursor)
+        self.current_test = current_test
+        self._check('__init__')
         super().__init__()
         self._now = None
         self._closed = False
@@ -529,6 +533,10 @@ class TestCursor(BaseCursor):
         # savepoint at its last commit, the savepoint is created lazily
         self._savepoint = self._cursor.savepoint(flush=False)
 
+    def _check(self, operation):
+        if self.current_test:
+            self.current_test.check_test_cursor(operation)
+
     def execute(self, *args, **kwargs):
         if not self._savepoint:
             self._savepoint = self._cursor.savepoint(flush=False)
@@ -537,22 +545,23 @@ class TestCursor(BaseCursor):
 
     def close(self):
         if not self._closed:
-            self.rollback()
-            self._closed = True
-            if self._savepoint:
-                self._savepoint.close(rollback=False)
-
-            tos = self._cursors_stack.pop()
-            if tos is not self:
-                _logger.warning("Found different un-closed cursor when trying to close %s: %s", self, tos)
-
-            self._lock.release()
+            try:
+                self.rollback()
+                if self._savepoint:
+                    self._savepoint.close(rollback=False)
+            finally:
+                self._closed = True
+                tos = self._cursors_stack.pop()
+                if tos is not self:
+                    _logger.warning("Found different un-closed cursor when trying to close %s: %s", self, tos)
+                self._lock.release()
 
     def autocommit(self, on):
         warnings.warn("Deprecated method and does nothing since 16.0", DeprecationWarning, 2)
 
     def commit(self):
         """ Perform an SQL `COMMIT` """
+        self._check('commit')
         self.flush()
         if self._savepoint:
             self._savepoint.close(rollback=False)
@@ -564,6 +573,7 @@ class TestCursor(BaseCursor):
 
     def rollback(self):
         """ Perform an SQL `ROLLBACK` """
+        self._check('rollback')
         self.clear()
         self.postcommit.clear()
         self.prerollback.run()
@@ -572,6 +582,7 @@ class TestCursor(BaseCursor):
         self.postrollback.run()
 
     def __getattr__(self, name):
+        self._check(name)
         return getattr(self._cursor, name)
 
     def now(self):
@@ -700,8 +711,9 @@ class ConnectionPool(object):
                 cnx.close()
                 last = self._connections.pop(i)[0]
                 count += 1
-        _logger.info('%r: Closed %d connections %s', self, count,
-                    (dsn and last and 'to %r' % last.dsn) or '')
+        if count:
+            _logger.info('%r: Closed %d connections %s', self, count,
+                        (dsn and last and 'to %r' % last.dsn) or '')
 
     def _dsn_equals(self, dsn1, dsn2):
         alias_keys = {'dbname': 'database'}

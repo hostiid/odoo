@@ -31,6 +31,7 @@
         'data/website_data.xml',
         'data/website_visitor_cron.xml',
         'data/digest_data.xml',
+        'data/update_theme_images.xml',
         'views/website_templates.xml',
         'views/snippets/snippets.xml',
         'views/snippets/s_title.xml',
@@ -120,6 +121,7 @@
         ],
         'web.assets_frontend': [
             ('replace', 'web/static/src/legacy/js/public/public_root_instance.js', 'website/static/src/js/content/website_root_instance.js'),
+            'website/static/src/core/errors/beforeunload_error_handler.js',
             'website/static/src/scss/website.scss',
             'website/static/src/scss/website.ui.scss',
             'website/static/src/js/utils.js',
@@ -183,6 +185,7 @@
             'website/static/src/components/fields/*',
             'website/static/src/components/fullscreen_indication/fullscreen_indication.js',
             'website/static/src/components/fullscreen_indication/fullscreen_indication.scss',
+            'website/static/src/components/fullscreen_indication/fullscreen_indication.xml',
             'website/static/src/components/website_loader/website_loader.js',
             'website/static/src/components/website_loader/website_loader.scss',
             'website/static/src/components/views/*',

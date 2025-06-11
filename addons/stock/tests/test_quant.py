@@ -9,7 +9,7 @@ from odoo import fields
 from odoo.addons.mail.tests.common import mail_new_test_user
 from odoo.exceptions import ValidationError
 from odoo.tests.common import Form, TransactionCase
-from odoo.exceptions import AccessError, UserError
+from odoo.exceptions import AccessError, RedirectWarning, UserError
 
 
 class StockQuant(TransactionCase):
@@ -51,10 +51,7 @@ class StockQuant(TransactionCase):
             'type': 'product',
             'tracking': 'serial',
         })
-        cls.stock_location = cls.env['stock.location'].create({
-            'name': 'stock_location',
-            'usage': 'internal',
-        })
+        cls.stock_location = cls.env.ref('stock.stock_location_stock')
         cls.stock_subloc3 = cls.env['stock.location'].create({
             'name': 'subloc3',
             'usage': 'internal',
@@ -210,7 +207,9 @@ class StockQuant(TransactionCase):
         """
         quant = self.env['stock.quant'].search([('location_id', '=', self.stock_location.id)], limit=1)
         if not quant:
-            self.skipTest('Cannot test concurrent transactions without demo data.')
+            with closing(self.registry.cursor()) as cr:
+                self.env['stock.quant']._update_available_quantity(self.product, self.stock_location, quantity=1.0)
+                quant = self.env['stock.quant'].search([('location_id', '=', self.stock_location.id)], limit=1)
         product = quant.product_id
         available_quantity = self.env['stock.quant']._get_available_quantity(product, self.stock_location, allow_negative=True)
         # opens a new cursor and SELECT FOR UPDATE the quant, to simulate another concurrent reserved
@@ -299,7 +298,9 @@ class StockQuant(TransactionCase):
         """
         quant = self.env['stock.quant'].search([('location_id', '=', self.stock_location.id)], limit=1)
         if not quant:
-            self.skipTest('Cannot test concurrent transactions without demo data.')
+            with closing(self.registry.cursor()) as cr:
+                self.env['stock.quant']._update_available_quantity(self.product, self.stock_location, quantity=1.0)
+                quant = self.env['stock.quant'].search([('location_id', '=', self.stock_location.id)], limit=1)
         product = quant.product_id
         available_quantity = self.env['stock.quant']._get_available_quantity(product, self.stock_location, allow_negative=True)
 
@@ -440,7 +441,7 @@ class StockQuant(TransactionCase):
         with self.assertRaises(UserError):
             self.env['stock.quant']._update_reserved_quantity(self.product, self.stock_location, 1.0)
         self.assertEqual(self.env['stock.quant']._get_available_quantity(self.product, self.stock_location), 0.0)
-        with self.assertRaises(UserError):
+        with self.assertRaises(RedirectWarning):
             self.env['stock.quant']._update_reserved_quantity(self.product, self.stock_location, -1.0, strict=True)
         self.assertEqual(self.env['stock.quant']._get_available_quantity(self.product, self.stock_location), 0.0)
 
@@ -485,7 +486,7 @@ class StockQuant(TransactionCase):
         self.assertEqual(self.env['stock.quant']._get_available_quantity(self.product_serial, self.stock_location, strict=True), 1.0)
         self.assertEqual(self.env['stock.quant']._get_available_quantity(self.product_serial, self.stock_location, lot_id=lot1), 2.0)
 
-        with self.assertRaises(UserError):
+        with self.assertRaises(RedirectWarning):
             self.env['stock.quant']._update_reserved_quantity(self.product_serial, self.stock_location, -1.0, strict=True)
 
         self.assertEqual(self.env['stock.quant']._get_available_quantity(self.product_serial, self.stock_location), 2.0)
@@ -934,3 +935,58 @@ class StockQuant(TransactionCase):
         package.with_context(inventory_mode=True).unpack()
         self.assertFalse(quant.package_id)
         self.assertTrue(True)
+
+    def test_unpack_and_quants_history(self):
+        """
+        Test that after unpacking the quant history is preserved
+        """
+        product = self.env['product.product'].create({
+            'name': 'Product',
+            'type': 'product',
+            'tracking': 'lot',
+        })
+        lot_a = self.env['stock.lot'].create({
+            'name': 'A',
+            'product_id': product.id,
+            'product_qty': 5,
+        })
+        package = self.env['stock.quant.package'].create({
+            'name': 'Super Package',
+        })
+        stock_location = self.stock_location
+        dst_location = self.stock_subloc2
+        picking_type = self.env.ref('stock.picking_type_internal')
+
+        self.env['stock.quant']._update_available_quantity(product, stock_location, 5.0, lot_id=lot_a, package_id=package)
+
+        picking = self.env['stock.picking'].create({
+            'picking_type_id': picking_type.id,
+            'location_id': dst_location.id,
+            'location_dest_id': stock_location.id,
+            'move_ids': [(0, 0, {
+                'name': 'In 5 x %s' % product.name,
+                'product_id': product.id,
+                'location_id': stock_location.id,
+                'location_dest_id': dst_location.id,
+                'product_uom_qty': 5,
+                'product_uom': product.uom_id.id,
+            })],
+        })
+        picking.action_confirm()
+
+        picking.move_ids.move_line_ids.write({
+            'qty_done': 5,
+            'lot_id': lot_a.id,
+            'package_id': package.id,
+            'result_package_id': package.id,
+        })
+        picking.button_validate()
+        package.unpack()
+
+        quant = self.env['stock.quant'].search([
+            ('product_id', '=', product.id),
+            ('location_id', '=', dst_location.id),
+        ])
+        action = quant.action_view_stock_moves()
+        history = self.env['stock.move.line'].search(action['domain'])
+        self.assertTrue(history)

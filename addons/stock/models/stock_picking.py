@@ -42,7 +42,7 @@ class PickingType(models.Model):
         'stock.location', 'Default Destination Location',
         check_company=True,
         help="This is the default destination location when you create a picking manually with this operation type. It is possible however to change it or that the routes put another location. If it is empty, it will check for the customer location on the partner. ")
-    code = fields.Selection([('incoming', 'Receipt'), ('outgoing', 'Delivery'), ('internal', 'Internal Transfer')], 'Type of Operation', required=True)
+    code = fields.Selection([('incoming', 'Receipt'), ('outgoing', 'Delivery'), ('internal', 'Internal Transfer')], 'Type of Operation', default='incoming', required=True)
     return_picking_type_id = fields.Many2one(
         'stock.picking.type', 'Operation Type for Returns',
         check_company=True)
@@ -350,7 +350,7 @@ class Picking(models.Model):
         help="Is late or will be late depending on the deadline and scheduled date")
     date = fields.Datetime(
         'Creation Date',
-        default=fields.Datetime.now, tracking=True,
+        default=fields.Datetime.now, tracking=True, copy=False,
         states={'done': [('readonly', True)], 'cancel': [('readonly', True)]},
         help="Creation Date, usually the time of the order")
     date_done = fields.Datetime('Date of Transfer', copy=False, readonly=True, help="Date at which the transfer has been processed or cancelled.")
@@ -777,7 +777,7 @@ class Picking(models.Model):
         })
         if any(line.reserved_qty or line.qty_done for line in self.move_ids.move_line_ids):
             return {'warning': {
-                    'title': 'Locations to update',
+                    'title': _("Locations to update"),
                     'message': _("You might want to update the locations of this transfer's operations")
                 }
             }
@@ -882,13 +882,7 @@ class Picking(models.Model):
         )
         if not moves:
             raise UserError(_('Nothing to check the availability for.'))
-        # If a package level is done when confirmed its location can be different than where it will be reserved.
-        # So we remove the move lines created when confirmed to set quantity done to the new reserved ones.
-        package_level_done = self.mapped('package_level_ids').filtered(lambda pl: pl.is_done and pl.state == 'confirmed')
-        package_level_done.write({'is_done': False})
         moves._action_assign()
-        package_level_done.write({'is_done': True})
-
         return True
 
     def action_cancel(self):
@@ -995,15 +989,14 @@ class Picking(models.Model):
                     else:
                         move_lines_in_package_level = move_lines_to_pack.filtered(lambda ml: ml.move_id.package_level_id)
                         move_lines_without_package_level = move_lines_to_pack - move_lines_in_package_level
+
+                        if pack.package_use == 'disposable':
+                            (move_lines_in_package_level | move_lines_without_package_level).result_package_id = pack
+                        move_lines_in_package_level.result_package_id = pack
                         for ml in move_lines_in_package_level:
-                            ml.write({
-                                'result_package_id': pack.id,
-                                'package_level_id': ml.move_id.package_level_id.id,
-                            })
-                        move_lines_without_package_level.write({
-                            'result_package_id': pack.id,
-                            'package_level_id': package_level_ids[0].id,
-                        })
+                            ml.package_level_id = ml.move_id.package_level_id.id
+
+                        move_lines_without_package_level.package_level_id = package_level_ids[0]
                         for pl in package_level_ids:
                             pl.location_dest_id = self._get_entire_pack_location_dest(pl.move_line_ids) or picking.location_dest_id.id
 
@@ -1239,6 +1232,19 @@ class Picking(models.Model):
                 if picking.immediate_transfer:
                     picking.move_ids.write({'state': 'assigned'})
 
+    def _get_moves_to_backorder(self):
+        self.ensure_one()
+        return self.move_ids.filtered(lambda x: x.state not in ('done', 'cancel'))
+
+    def _create_backorder_picking(self):
+        self.ensure_one()
+        return self.copy({
+            'name': '/',
+            'move_ids': [],
+            'move_line_ids': [],
+            'backorder_id': self.id,
+        })
+
     def _create_backorder(self):
         """ This method is called when the user chose to create a backorder. It will create a new
         picking, the backorder, and move the stock.moves that are not `done` or `cancel` into it.
@@ -1246,14 +1252,9 @@ class Picking(models.Model):
         backorders = self.env['stock.picking']
         bo_to_assign = self.env['stock.picking']
         for picking in self:
-            moves_to_backorder = picking.move_ids.filtered(lambda x: x.state not in ('done', 'cancel'))
+            moves_to_backorder = picking._get_moves_to_backorder()
             if moves_to_backorder:
-                backorder_picking = picking.copy({
-                    'name': '/',
-                    'move_ids': [],
-                    'move_line_ids': [],
-                    'backorder_id': picking.id
-                })
+                backorder_picking = picking._create_backorder_picking()
                 moves_to_backorder.write({'picking_id': backorder_picking.id})
                 moves_to_backorder.move_line_ids.package_level_id.write({'picking_id':backorder_picking.id})
                 moves_to_backorder.mapped('move_line_ids').write({'picking_id': backorder_picking.id})
@@ -1502,11 +1503,18 @@ class Picking(models.Model):
                 })
         return package
 
-    def _package_move_lines(self):
+    def _package_move_lines(self, batch_pack=False):
         picking_move_lines = self.move_line_ids
+        # in theory, the following values in the "if" statement after this should always be the same
+        # (i.e. for batch transfers), but customizations may bypass it and cause unexpected behavior
+        # so we avoid allowing those situations
+        if len(self.picking_type_id) > 1:
+            raise UserError(_("You cannot pack products into the same package when they are from different transfers with different operation types."))
+        if len(set(self.mapped("immediate_transfer"))) > 1:
+            raise UserError(_("You cannot pack products into the same package when they are from both immediate and planned transfers."))
         if (
             not self.picking_type_id.show_reserved
-            and not self.immediate_transfer
+            and any(not p.immediate_transfer for p in self)
             and not self.env.context.get('barcode_view')
         ):
             picking_move_lines = self.move_line_nosuggest_ids

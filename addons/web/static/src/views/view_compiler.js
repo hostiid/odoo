@@ -18,7 +18,7 @@ import { toStringExpression, BUTTON_CLICK_PARAMS } from "./utils";
 
 import { xml } from "@odoo/owl";
 
-const BUTTON_STRING_PROPS = ["string", "size", "title", "icon", "id"];
+const BUTTON_STRING_PROPS = ["string", "size", "title", "icon", "id", "disabled"];
 const INTERP_REGEXP = /(\{\{|#\{)(.*?)(\}{1,2})/g;
 
 /**
@@ -253,6 +253,7 @@ export class ViewCompiler {
     compile(key, params = {}) {
         const child = this.compileNode(this.templates[key], params);
         const newRoot = createElement("t", [child]);
+        newRoot.setAttribute("t-translation", "off");
         return newRoot;
     }
 

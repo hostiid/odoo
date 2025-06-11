@@ -58,7 +58,13 @@ options.registry.gallery = options.Class.extend({
             }
         });
 
-        return this._super.apply(this, arguments);
+        return this._super.apply(this, arguments).then(() => {
+            // Call specific mode's start if defined (e.g. _slideshowStart)
+            const startMode = this[`_${this.getMode()}Start`];
+            if (startMode) {
+                startMode.bind(this)();
+            }
+        });
     },
     /**
      * @override
@@ -112,9 +118,8 @@ options.registry.gallery = options.Class.extend({
             save: images => {
                 // TODO In master: restore addImages Promise result.
                 this.trigger_up('snippet_edition_request', {exec: () => {
-                    let $newImageToSelect;
                     for (const image of images) {
-                        const $img = $('<img/>', {
+                        $('<img/>', {
                             class: $images.length > 0 ? $images[0].className : 'img img-fluid d-block ',
                             src: image.src,
                             'data-index': ++index,
@@ -122,15 +127,10 @@ options.registry.gallery = options.Class.extend({
                             'data-name': _t('Image'),
                             style: $images.length > 0 ? $images[0].style.cssText : '',
                         }).appendTo($container);
-                        if (!$newImageToSelect) {
-                            $newImageToSelect = $img;
-                        }
                     }
                     if (images.length > 0) {
                         return this._modeWithImageWait('reset', this.getMode()).then(() => {
                             this.trigger_up('cover_update');
-                            // Triggers the re-rendering of the thumbnail
-                            $newImageToSelect.trigger('image_changed');
                         });
                     }
                 }});
@@ -363,6 +363,7 @@ options.registry.gallery = options.Class.extend({
 
         // Apply layout animation
         this.$target.off('slide.bs.carousel').off('slid.bs.carousel');
+        this._slideshowStart();
         this.$('li.fa').off('click');
     },
 
@@ -553,6 +554,50 @@ options.registry.gallery = options.Class.extend({
         var $container = this.$('> .container, > .container-fluid, > .o_container_small');
         $container.empty().append($content);
         return $container;
+    },
+    /**
+     * Sets up listeners on slideshow to activate selected image.
+     */
+    _slideshowStart() {
+        const $carousel = this.$bsTarget.is(".carousel") ? this.$bsTarget : this.$bsTarget.find(".carousel");
+        let _previousEditor;
+        let _miniatureClicked;
+        const carouselIndicatorsEl = this.$target[0].querySelector(".carousel-indicators");
+        if (carouselIndicatorsEl) {
+            carouselIndicatorsEl.addEventListener("click", () => {
+                _miniatureClicked = true;
+            });
+        }
+        let lastSlideTimeStamp;
+        $carousel.on("slide.bs.carousel.image_gallery", (ev) => {
+            lastSlideTimeStamp = ev.timeStamp;
+            const activeImageEl = this.$target[0].querySelector(".carousel-item.active img");
+            for (const editor of this.options.wysiwyg.snippetsMenu.snippetEditors) {
+                if (editor.isShown() && editor.$target[0] === activeImageEl) {
+                    _previousEditor = editor;
+                    editor.toggleOverlay(false);
+                }
+            }
+        });
+        $carousel.on("slid.bs.carousel.image_gallery", (ev) => {
+            if (!_previousEditor && !_miniatureClicked) {
+                return;
+            }
+            _previousEditor = undefined;
+            _miniatureClicked = false;
+            // slid.bs.carousel is most of the time fired too soon by bootstrap
+            // since it emulates the transitionEnd with a setTimeout. We wait
+            // here an extra 20% of the time before retargeting edition, which
+            // should be enough...
+            const _slideDuration = new Date().getTime() - lastSlideTimeStamp;
+            setTimeout(() => {
+                const activeImageEl = this.$target[0].querySelector(".carousel-item.active img");
+                this.trigger_up("activate_snippet", {
+                    $snippet: $(activeImageEl),
+                    ifInactiveOptions: true,
+                });
+            }, 0.2 * _slideDuration);
+        });
     },
     /**
      * Call mode while ensuring that all images are loaded.

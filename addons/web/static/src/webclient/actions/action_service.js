@@ -67,6 +67,12 @@ function parseActiveIds(ids) {
     return activeIds;
 }
 
+const parser = new DOMParser();
+function isHelpEmpty(help) {
+    const doc = parser.parseFromString(help, "text/html");
+    return doc.body.innerText.trim() === "";
+}
+
 // -----------------------------------------------------------------------------
 // Errors
 // -----------------------------------------------------------------------------
@@ -92,6 +98,7 @@ function makeActionManager(env) {
     let dialogCloseProm;
     let actionCache = {};
     let dialog = null;
+    let nextDialog = null;
 
     // The state action (or default user action if none) is loaded as soon as possible
     // so that the next "doAction" will have its action ready when needed.
@@ -207,9 +214,7 @@ function makeActionManager(env) {
                 ? evaluateExpr(domain, Object.assign({}, env.services.user.context, action.context))
                 : domain;
         if (action.help) {
-            const htmlHelp = document.createElement("div");
-            htmlHelp.innerHTML = action.help;
-            if (!htmlHelp.innerText.trim()) {
+            if (isHelpEmpty(action.help)) {
                 delete action.help;
             }
         }
@@ -741,7 +746,6 @@ function makeActionManager(env) {
         ControllerComponent.template = ControllerComponentTemplate;
         ControllerComponent.Component = controller.Component;
 
-        let nextDialog = null;
         if (action.target === "new") {
             cleanDomFromBootstrap();
             const actionDialogProps = {
@@ -764,6 +768,9 @@ function makeActionManager(env) {
                     cleanDomFromBootstrap();
                 },
             });
+            if (nextDialog) {
+                nextDialog.remove();
+            }
             nextDialog = {
                 remove: removeDialog,
                 onClose: onClose || options.onClose,
